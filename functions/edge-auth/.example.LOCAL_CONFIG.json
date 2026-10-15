@@ -1,0 +1,26 @@
+{
+  "client_id": "$CLIENT_ID_FROM_IDP",
+  "client_secret": "$CLIENT_SECRET_FROM_IDP",
+  "scope": "openid email",
+  "response_type": "code",
+  "grant_type": "authorization_code",
+
+  "CALLBACK_BASE_URL": "http://localhost:3000",
+  "CALLBACK_PATH": "/_callback",
+  "DISCOVERY_DOCUMENT_URL": "https://accounts.google.com/.well-known/openid-configuration",
+
+  "_comment_endpoints": "Supplying all four skips the discovery fetch entirely, which matters inside the 5s viewer-request budget. Remove them to fall back to discovery.",
+  "ISSUER": "https://accounts.google.com",
+  "AUTHORIZATION_ENDPOINT": "https://accounts.google.com/o/oauth2/v2/auth",
+  "TOKEN_ENDPOINT": "https://oauth2.googleapis.com/token",
+  "JWKS_URI": "https://www.googleapis.com/oauth2/v3/certs",
+
+
+  "PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n",
+
+  "SESSION_DURATION": 43200,
+
+  "ALLOWED_EMAILS": ["you@example.com"],
+  "JSON_PATH_PREFIXES": ["/api/"]
+}

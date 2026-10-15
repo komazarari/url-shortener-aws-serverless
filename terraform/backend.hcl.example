@@ -1,0 +1,13 @@
+# USAGE:
+#
+#   cp backend.hcl.example backend.hcl
+#   $EDITOR backend.hcl
+#   terraform init -backend-config=backend.hcl
+#
+
+bucket  = "REPLACE-terraform-state-bucket"
+key     = "url-shortener/terraform.tfstate"
+region  = "ap-northeast-1"
+encrypt = true
+
+use_lockfile = true

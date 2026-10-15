@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>URL Shortener</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Hiragino Sans", sans-serif;
+    max-width: 40rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.7;
+  }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1rem; margin-top: 2.5rem; }
+  form { display: flex; gap: .5rem; margin: 1.5rem 0; }
+  input[type=url], input[type=text] { flex: 1; padding: .6rem .7rem; font-size: 1rem;
+    border: 1px solid currentColor; border-radius: .35rem; background: transparent; color: inherit; }
+  button { padding: .6rem 1.1rem; font-size: 1rem; border-radius: .35rem;
+    border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #out, #lookup-out { margin-top: 1.5rem; padding: 1rem; border: 1px solid currentColor;
+    border-radius: .35rem; display: none; }
+  #out.err, #lookup-out.err { border-style: dashed; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .muted { opacity: .7; font-size: .85rem; }
+
+  dialog {
+    border: 1px solid currentColor; border-radius: .5rem; padding: 1.25rem;
+    max-width: 24rem; color: inherit; background: Canvas;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .5); }
+  /* The code stays black on white whatever the page theme is doing: an
+     inverted or transparent QR is one most scanners refuse. */
+  #qr-figure { background: #fff; width: 12rem; height: 12rem; margin: 0 auto; }
+  #qr-figure svg { display: block; }
+  dialog .row { margin-top: 1rem; }
+  fieldset { border: 0; padding: 0; margin: 1rem 0 0; }
+  label { font-size: .85rem; }
+  select { font: inherit; padding: .2rem; background: transparent; color: inherit;
+    border: 1px solid currentColor; border-radius: .25rem; }
+</style>
+</head>
+<body>
+<h1>URL Shortener</h1>
+
+<form id="f">
+  <input id="url" type="url" placeholder="https://example.com/very/long/url" required autofocus>
+  <button id="go" type="submit">Shorten</button>
+</form>
+
+<div id="out"></div>
+
+<h2>Look up a key</h2>
+
+<form id="lf">
+  <input id="key" type="text" placeholder="1a2b3c4d5e, or a whole short link" required>
+  <button id="lgo" type="submit">Look up</button>
+</form>
+
+<div id="lookup-out"></div>
+
+<p class="muted">Authentication happens at the CloudFront edge. If you can see this page, you are signed in.</p>
+
+<dialog id="qr-modal">
+  <div id="qr-figure"></div>
+  <p class="muted" style="text-align: center"><code id="qr-url"></code></p>
+
+  <fieldset class="row">
+    <label>Error correction
+      <select id="qr-ec">
+        <option value="L" selected>L &mdash; smallest</option>
+        <option value="M">M</option>
+        <option value="Q">Q</option>
+      </select>
+    </label>
+    <label>Sticker
+      <select id="qr-mm">
+        <option value="12">12 mm</option>
+        <option value="15">15 mm</option>
+        <option value="20" selected>20 mm</option>
+        <option value="25">25 mm</option>
+        <option value="30">30 mm</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <p class="muted" id="qr-info"></p>
+
+  <div class="row">
+    <button type="button" id="qr-svg">SVG</button>
+    <button type="button" id="qr-png">PNG</button>
+    <button type="button" id="qr-copy" hidden>Copy</button>
+    <button type="button" id="qr-close" style="margin-left: auto">Close</button>
+  </div>
+</dialog>
+
+<script src="/admin/qrcode.js"></script>
+<script>
+const form = document.getElementById('f');
+const input = document.getElementById('url');
+const button = document.getElementById('go');
+const out = document.getElementById('out');
+
+const lookupForm = document.getElementById('lf');
+const keyInput = document.getElementById('key');
+const lookupButton = document.getElementById('lgo');
+const lookupOut = document.getElementById('lookup-out');
+
+// SHA-256 of the empty string. The Function URL sits behind CloudFront OAC,
+// which signs origin requests with SigV4, and Lambda rejects unsigned
+// payloads -- so every request carries the hash of its own body, including
+// the ones that have no body at all.
+const EMPTY_SHA256 =
+  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+function show(target, html, isError) {
+  target.style.display = 'block';
+  target.className = isError ? 'err' : '';
+  target.innerHTML = html;
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function api(path, options = {}) {
+  const body = options.body;
+  const response = await fetch(path, {
+    ...options,
+    credentials: 'same-origin',
+    headers: {
+      'content-type': 'application/json',
+      'x-amz-content-sha256': body === undefined ? EMPTY_SHA256 : await sha256Hex(body),
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
+// The edge function answers an expired session with 401 JSON rather than a
+// redirect -- a 302 would reach fetch as an inscrutable CORS error -- so the
+// page has to explain it.
+function expired(target) {
+  show(target,
+    '<strong>Session expired</strong><br>' +
+    '<button type="button" id="reload">Reload to sign in</button>', true);
+  document.getElementById('reload').addEventListener('click', () => location.reload());
+}
+
+// Target URLs keep characters like " and < verbatim, so anything from the
+// API is escaped before it reaches innerHTML, in text and attributes alike.
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+function linkRow(data, note) {
+  const shortUrl = escapeHtml(data.short_url);
+  return (
+    `<div class="row"><code>${shortUrl}</code>` +
+    `<button type="button" data-copy="${shortUrl}">Copy</button>` +
+    `<button type="button" data-qr="${shortUrl}">Show QR</button>${note || ''}</div>` +
+    `<p class="muted">&rarr; ${escapeHtml(data.target_url)}</p>`
+  );
+}
+
+// Delegated, so both result panels get working buttons without rebinding.
+document.addEventListener('click', async (event) => {
+  const copy = event.target.closest('[data-copy]');
+  if (copy) {
+    await navigator.clipboard.writeText(copy.dataset.copy);
+    copy.textContent = 'Copied';
+    return;
+  }
+  const qr = event.target.closest('[data-qr]');
+  if (qr) openQr(qr.dataset.qr);
+});
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  button.disabled = true;
+  show(out, '...', false);
+
+  const body = JSON.stringify({ url: input.value });
+
+  try {
+    const { response, data } = await api('/api/links', { method: 'POST', body });
+
+    if (response.status === 401) return expired(out);
+    if (!response.ok) {
+      show(out, `<strong>Error ${response.status}</strong><br>${escapeHtml(data.message ?? data.error)}`, true);
+      return;
+    }
+
+    show(out, linkRow(data, data.existing ? ' <span class="muted">(already registered)</span>' : ''), false);
+    input.select();
+  } catch (err) {
+    show(out, `<strong>Request failed</strong><br>${escapeHtml(err)}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+lookupForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  lookupButton.disabled = true;
+  show(lookupOut, '...', false);
+
+  // Take a bare key, a path, or a whole short link -- whatever happens to be
+  // on the clipboard. Validating the shape is the server's job; this only has
+  // to find the key in what was pasted.
+  const key = keyInput.value.trim().replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop();
+
+  try {
+    const { response, data } = await api(`/api/links/${encodeURIComponent(key)}`);
+
+    if (response.status === 401) return expired(lookupOut);
+    if (!response.ok) {
+      show(lookupOut,
+        `<strong>Error ${response.status}</strong><br>${escapeHtml(data.message ?? data.error)}`, true);
+      return;
+    }
+
+    show(lookupOut, linkRow(data), false);
+  } catch (err) {
+    show(lookupOut, `<strong>Request failed</strong><br>${escapeHtml(err)}`, true);
+  } finally {
+    lookupButton.disabled = false;
+  }
+});
+
+// --- QR ------------------------------------------------------------------
+//
+// The vendored library encodes; the SVG is built here. Twenty lines buys an
+// explicit quiet zone, an explicit white background, and no innerHTML of a
+// string the library produced.
+
+// Modules of margin. Mandatory -- scanners need it, and whoever crops the
+// exported file later will crop it away unless it is part of the image.
+const QUIET = 4;
+
+const modal = document.getElementById('qr-modal');
+const figure = document.getElementById('qr-figure');
+const urlLabel = document.getElementById('qr-url');
+const ecSelect = document.getElementById('qr-ec');
+const mmSelect = document.getElementById('qr-mm');
+const info = document.getElementById('qr-info');
+const copyButton = document.getElementById('qr-copy');
+
+let current = null;  // { text, matrix, modules, size }
+
+function encode(text, ec) {
+  const qr = qrcode(0, ec);
+  qr.addData(text, 'Byte');
+  qr.make();
+
+  const modules = qr.getModuleCount();
+  const matrix = [];
+  for (let r = 0; r < modules; r++) {
+    const row = [];
+    for (let c = 0; c < modules; c++) row.push(qr.isDark(r, c));
+    matrix.push(row);
+  }
+  return { text, matrix, modules, size: modules + QUIET * 2 };
+}
+
+// One module = one user unit, so the file carries no resolution of its own.
+function toSvg(qr) {
+  let d = '';
+  for (let r = 0; r < qr.modules; r++)
+    for (let c = 0; c < qr.modules; c++)
+      if (qr.matrix[r][c]) d += `M${c + QUIET},${r + QUIET}h1v1h-1z`;
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${qr.size} ${qr.size}" ` +
+    `width="100%" height="100%" shape-rendering="crispEdges">` +
+    `<rect width="${qr.size}" height="${qr.size}" fill="#fff"/>` +
+    `<path d="${d}" fill="#000"/></svg>`
+  );
+}
+
+// Drawn module by module at an integer scale rather than rasterised from the
+// SVG: every module comes out the same number of pixels, which is the one
+// thing that keeps a small printed code crisp.
+function toCanvas(qr, target = 1024) {
+  const scale = Math.max(1, Math.round(target / qr.size));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = qr.size * scale;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000';
+  for (let r = 0; r < qr.modules; r++)
+    for (let c = 0; c < qr.modules; c++)
+      if (qr.matrix[r][c])
+        ctx.fillRect((c + QUIET) * scale, (r + QUIET) * scale, scale, scale);
+
+  return canvas;
+}
+
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function keyOf(text) {
+  return text.split('/').pop() || 'qr';
+}
+
+function render() {
+  current = encode(current.text, ecSelect.value);
+  figure.innerHTML = toSvg(current);
+  urlLabel.textContent = current.text;
+
+  // Below about 0.4 mm per module, phone cameras start to struggle and label
+  // printers start to blur. That is the number worth seeing here.
+  const mm = Number(mmSelect.value) / current.size;
+  info.textContent =
+    `${current.modules} x ${current.modules} modules, ` +
+    `${mm.toFixed(2)} mm each at ${mmSelect.value} mm` +
+    (mm < 0.4 ? ' - too fine, print it larger' : '');
+}
+
+function openQr(text) {
+  current = { text };
+  render();
+  modal.showModal();
+}
+
+ecSelect.addEventListener('change', render);
+mmSelect.addEventListener('change', render);
+document.getElementById('qr-close').addEventListener('click', () => modal.close());
+
+document.getElementById('qr-svg').addEventListener('click', () => {
+  download(new Blob([toSvg(current)], { type: 'image/svg+xml' }), `${keyOf(current.text)}.svg`);
+});
+
+document.getElementById('qr-png').addEventListener('click', () => {
+  toCanvas(current).toBlob((blob) => download(blob, `${keyOf(current.text)}.png`));
+});
+
+// Image clipboard writes need a secure context and are not everywhere yet.
+if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+  copyButton.hidden = false;
+  copyButton.addEventListener('click', () => {
+    toCanvas(current).toBlob(async (blob) => {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      copyButton.textContent = 'Copied';
+      setTimeout(() => { copyButton.textContent = 'Copy'; }, 1500);
+    });
+  });
+}
+</script>
+</body>
+</html>

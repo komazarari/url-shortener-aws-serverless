@@ -1,0 +1,24 @@
+aws_region  = "ap-northeast-1"
+domain_name = "short.example.net"
+
+# An ISSUED ACM certificate covering domain_name. MUST be in us-east-1.
+#   aws acm list-certificates --region us-east-1 \
+#     --query "CertificateSummaryList[?DomainName=='short.example.net']"
+acm_certificate_arn = "arn:aws:acm:us-east-1:000000000000:certificate/REPLACE"
+
+redirect_bucket_name = "REPLACE-redirect-bucket"
+
+
+# DNS/Route53 are out of scope
+
+# Secret injected into the Referer header by CloudFront.
+# Generate with: openssl rand -hex 32
+origin_secret = "REPLACE-run-openssl-rand-hex-32"
+
+# Two-phase rollout. Apply with false, wait for CloudFront to deploy,
+# then set true. Roll back by setting false again (S3 policy applies instantly).
+enforce_origin_secret = false
+
+# Admin page bucket name prefix. Account id and region are appended, and the
+# bucket uses the account-regional namespace, so this need not be unique globally.
+admin_bucket_name = "shortener-admin"

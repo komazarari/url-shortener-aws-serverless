@@ -1,0 +1,55 @@
+# --- Instance-specific values and operational notes ---
+# The repository itself is generic. Anything identifying a particular
+# deployment goes here and stays out of git.
+docs/instance-notes.md
+inventory/
+
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
+# Plan files contain the full diff, including sensitive variable values.
+*.tfplan
+tfplan*
+crash.log
+crash.*.log
+
+# Real identifiers and secrets. Only the .example files are tracked.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Backend values (the bucket name embeds an account id).
+# backend.tf holds the empty declaration and IS tracked.
+backend.hcl
+
+# Output of terraform plan -generate-config-out, and any backup of it.
+*generated.tf*
+*.bk
+*.bak
+
+# --- Build artefacts ---
+*.zip
+terraform/.build/
+functions/edge-auth/dist/
+
+# --- Edge authenticator configuration ---
+# Lambda@Edge cannot use environment variables, so its settings live in files.
+# Contains the OIDC client secret, the session signing key and the allowlist.
+LOCAL_CONFIG.json
+CF_CONFIG.json
+CF_CONFIG.json.encoded
+SM_CONFIG_KEY.json
+*.pem
+
+# --- Dependencies ---
+functions/**/node_modules/
+functions/**/.venv/
+__pycache__/
+*.pyc
+
+# --- OS and editors ---
+.DS_Store
+.idea/
+.vscode/
